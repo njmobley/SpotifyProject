@@ -1,0 +1,352 @@
+---
+title: "Predicting the Streaming Success of Songs Based on Elements of Songs"
+author: "Allison McCarty, Nick Mobley, Thomas Janes, Bilal Mozaffar"
+date: "5/2/2020"
+output:
+  html_document: default
+  pdf_document: default
+subtitle: STAT-S432 Final Project
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache=TRUE, autodep=TRUE,
+               message=FALSE, warning=FALSE)
+options(show.signif.stars=FALSE)
+library(MASS)
+library(knitr)
+library(tidyverse)
+library(gridExtra)
+library(stringr)
+library(ggthemes)
+library(mgcv)
+library(class)
+library(tree)
+library(maptree)
+library(randomForest)
+library(GGally)
+library(kableExtra)
+library(ggpubr)
+library(npreg)
+```
+
+```{r load_data}
+audiodat <- read.csv("cleanedAudio.csv")
+```
+
+## Introduction and Research Problem
+
+Spotify is a subscription streaming service that gives members access to millions of units of digital music, podcasts, and videos. Spotify offers multiple different subscription tiers, including a free plan, a premium plan, a premium student plan, and a premium family plan.
+
+Spotify was founded in 2006. The introduction of the platform radically changed the music inductry and revolutionized the way that the consumer listens to music.  Notably, music streaming services like Spotify (and later, an inferior copycat platform, Apple Music) rapidly expanded access to music by allowing consumers to have millions of digital records at their fingertips, rather than having to individaully purchase physical copies. Spotify has also developed creative ways of engaging their customers by creating algorithms of playlists based on the users' current streams, suggesting new artists, and notifying customers when their favorite artists are performing in their area.
+
+With platforms like Spotify expanding access to music, people have unsuprisingly started listening to more music. The combination of expanded access and engagement initiatives from Spotify has encouraged customers to diversify the music that they listen to. Noting the impact that this platform has had on the music industry as a whole, we are interested in learning about what makes some songs stand out in this format. In particular, we are interested in how specific audio features are associated with the popularity of a song. 
+
+Spotify API has resources for programmers to explore data from users on their platform. We found a dataset that was mined from Spotify. Variables in this dataset include:
+
+*Song ID:* Name of track
+
+*Performer:* Name of artist
+
+*Genre:* The genre of the track
+
+*Track Duration:* Legnth of track (milliseconds)
+
+*Track Popularity:* Estimation of the popularity of a song over a short, recent period of time, calculated using number of streams, artist popularity, genre, and relative age of the track
+
+*Danceability:* Estimation of how easy the track is to dance to on a scale from 0.0 to 1.0, using a combination of musical elements including tempo, rhythm stability, beat strength, and overall regularity
+
+*Energy:* Estimation of the perception of noise, instensity, and speed of the song on a scale from 0.0 to 1.0
+
+*Key:* Estimated key of the track in integers, using Pitch Class notation.  Default value of -1.
+
+*Mode:* Categotical variable Representing modality -- major (1) or minor (0) -- of a track.
+
+*Explicit:* Categorical variable decribing whether the track contains profanities (yes) or not (no).
+
+*Loudness:* Measure of the overall loudness of the track in decibels (dB).
+
+*Speechiness:* Represents the presence of spoken words in a track on a scale from 0.0 (no spoken words) to 1.0 (all spoken words, probably a podcast or talkshow).
+
+*Acousticness:* Value between 0.0 and 1.0 representing the confidence that the track is accoustic
+
+*Instrumentalness:* A measure of the vocal content of the song from 0.0 to 1.0, preresenting the probability that the track contains no vocals.
+
+*Liveness:* Estimated measure of audience presence on a scale from 0.0 to 1.0, representing the probability that the track was recorded live.
+
+*Valence:* Measure of the relative happiness of a track from 0.0 (very sad, mad, or angry) to 1.0 (very happy).
+
+*Tempo:* Estimated overall tempo of the track measured in beats per minute.
+
+## Exploratory Data Analysis
+
+```{r audio_scatterplot_functions, include=FALSE}
+#Look at scatterplots 
+basicScatter <- function(response,predictor,trans = .05) {
+    curData = audiodat
+    ggplot(data = curData, aes(y = !!ensym(response),
+                                x = !!ensym(predictor))) + 
+        geom_point(alpha = trans) + geom_smooth(color="#1DB954")+theme_classic()
+}
+cntsPreds = c("energy", "loudness", "speechiness", "instrumentalness", "valence", "danceability", "acousticness", "liveness", "tempo")
+n = length(cntsPreds)
+sep  = n %/% 2
+firsthalf = lapply(cntsPreds[1:sep] , basicScatter, 
+                  response = "track_popularity")
+secondhalf = lapply(cntsPreds[(sep+1):n], basicScatter,
+                    response = "track_popularity")
+```
+
+```{r print_all_scatterplots, cache = TRUE, autodep= TRUE, message = FALSE, echo=FALSE}
+ggarrange(plotlist = firsthalf)
+ggarrange(plotlist = secondhalf)
+```
+
+ - A track's energy and loudness both seem to have a positive correlation with its popularity. Energy has a smoother that appears nearly linear, but loudness does not.  At high levels of loudness popularity takes a slight dip. It can be notes that the data is more sparse here, and the se confidence interval around the smoother is wider here.
+ 
+ - Instrumentalness seems to have little to no correlation with a track's popularity on Spotify.
+ 
+ - The trend of valence against track popularity shows that happier songs tend to be less popular. The smoother indicates that the relationship is linear.
+ 
+ - Danceability seems to have a positive, moderately strong, linear relationship with a track's popularity. This means that the more a song can be danced to, the more popular it tends to be. This is strange because we just found that happier songs are less popular, suggesting that valence and danceability have a negative relationship.
+ 
+ - The trend of acousticness is similar to that of valence, but acousticness has more points concentrated around its lower values, while valence has more points concentrated around its upper values. 
+ 
+ - Liveness, like instrumentalness, does not seem to have an impact on the popularity of songs.
+ 
+ - The trend of tempo against track popularity is rather strange, almost parabolic, because popularity is low on both ends of tempo's range and higher towards the middle. However, there is a dip in popularity in the middle of the middle which keeps the trend from closely resembling a parabola. This suggests that songs with intermediate tempo values tend to be the most popular.
+
+Distribution Plots
+
+```{r accousticness_and_liveliness_histograms, echo=FALSE}
+d1 <- ggplot(audiodat, aes(x = acousticness)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Acousticness")+theme_classic()
+d2 <- ggplot(audiodat, aes(x = liveness)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Liveness")+theme_classic()
+d3 <- ggplot(audiodat, aes( x = valence)) + geom_histogram(fill="#1DB954", color="black")+theme_classic()+ggtitle("Distribution of Valence")
+d4 <- ggplot(audiodat, aes(x = tempo)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Tempo")+theme_classic()
+d5 <- ggplot(audiodat, aes(x = energy)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Energy")+theme_classic()
+d6 <-ggplot(audiodat, aes(x = danceability)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Danceability")+theme_classic()
+d7 <- ggplot(audiodat, aes(x = loudness)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Loudness")+theme_classic()
+d8 <- ggplot(audiodat, aes(x = track_duration_ms)) + geom_histogram(fill="#1DB954", color="black") + ggtitle("Distribution of Duration")+theme_classic()
+grid.arrange(d1, d2, d3, d4, d5, d6, d7, d8, nrow=4)
+```
+
+
+- Both acousticness and liveness have a clear right-skew.  We will recode them as categorical predictors. For accousticness, we will add a recoded categorical variable with levels 'Not Acousitic', 'Somewhat Acoustic', 'Moderate Acoustic', and 'Definitely Acoustic'.  For accousticness, tracks with a liveness above or equal to .8 will be coded as "Yes" to indicate that it is a live performance. Tracks with a liveness below .8 will be coded as "No" to indicate that the track is not a live performance.
+
+- We will also recode valence because it seems to have a moderate left-skew.
+
+We recoded valence: 
+```{r} 
+happydensity <- ggplot(na.omit(audiodat),
+                       aes( x = track_popularity, 
+                            colour = valenceCoded)) + 
+    geom_density(position = 'dodge', alpha = .4)  + theme_classic()
+
+happyboxplot <- ggplot(na.omit(audiodat), 
+                  aes(x = valenceCoded, group = valenceCoded, fill = valenceCoded)) + 
+    geom_histogram(stat = 'count') + xlab("Category")+theme_classic()
+
+ggarrange(happydensity,happyboxplot, common.legend = TRUE)
+```
+
+ - There are simply many more happy songs released than there are sad songs. This suggests that there are more low-quality songs that are released for the sole sake of becoming popular as cash grabs for the artists and/or labels. This causes happy songs to have a lower median and mean popularity. 
+ 
+ - If we only look at songs that have a popularity of over 50, this might change some of our findings.
+ 
+## Initial Modeling
+    
+From our Exploratory Data Analysis we found that the features having the strongest relationship with track popularity were:
+- Tempo
+- Energy
+- Danceability 
+- Loudness 
+- Duration 
+
+However, all of these variables had a non-linear relationship with popularity and several were dependent on if the song was classified as being happy, indifferent, or melancholy. Because of this nonlinearity, it would be inappropiate to fit a linear model. Therefore we will attempt to fit several non-linear models on half of the data. We will then choose the model with the lowest validation error. With that model we will then train it on the other half of the data, and then make interpretations on what we think is the effect of our models.
+
+```{r split-data}
+n = nrow(audiodat)
+order = sample(n)
+training = audiodat[order[1:n/2],]
+testing = audiodat[-order[1:n/2],]
+```
+
+### First Model: GAM
+
+General Additive Models (or GAM) are useful since they use backfitting to estimate a non-linear function for each predictor, and the sum of those functions is our predicted value. Since almost all of our predictors have a non-linear fit, we think this would be a good model to estimate our data.
+
+```{r cv-functions}
+cv.gam = function(gamObj) mean((residuals(gamObj)/(1-gamObj$hat))^2)
+cv.glm = function(glmObj) mean((residuals(glmObj)/(1-hatvalues(glmObj)))^2) #works for lm
+cv.mdl <- function(data, formulae, fit.function = lm, family=gaussian, nfolds = 5) {
+    data <- na.omit(data)
+    formulae <- sapply(formulae, as.formula)
+    responses <- sapply(formulae, function(form) all.vars(form)[1])
+    names(responses) <- as.character(formulae)
+    n <- nrow(data)
+    fold.labels <- sample(rep(1:nfolds, length.out = n))
+    mses <- matrix(NA, nrow = nfolds, ncol = length(formulae))
+    colnames <- as.character(formulae)
+    for (fold in 1:nfolds) {
+        test.rows <- which(fold.labels == fold)
+        train <- data[-test.rows, ]
+        test <- data[test.rows, ]
+        for (form in 1:length(formulae)) {
+            current.model <- fit.function(formula = formulae[[form]], data = train, 
+                                          family=family) #change here
+            predictions <- predict(current.model, newdata = test, type='response') # change here
+            test.responses <- test[, responses[form]]
+            test.errors <- test.responses - predictions
+            mses[fold, form] <- mean(test.errors^2)
+        }
+    }
+    return(colMeans(mses))
+}
+```
+
+
+```{r gam-model} 
+form.gam1 = formula("track_popularity ~ 
+                    s(energy) +
+                    s(danceability) + 
+                    s(loudness) +
+                    s(tempo,by = valenceCoded) + 
+                    s(logLength)")
+form.gam2 = formula("track_popularity ~
+                    s(energy) +
+                    s(valence) +
+                    s(loudness) +
+                    s(danceability) +
+                    s(tempo, by = valenceCoded) +
+                    s(logLength)")
+form.gam3 = formula("track_popularity ~
+                    s(energy) +
+                    s(valence) +
+                    s(loudness) + 
+                    s(danceability) +
+                    s(loudness) + 
+                    s(tempo) +
+                    s(logLength)")
+form.gam4 = formula("track_popularity ~ 
+                    s(valence) +
+                    s(danceability) + 
+                    s(loudness) +
+                    s(tempo) +
+                    s(logLength)")
+form.gam5 = formula("track_popularity ~
+                    s(valence) +
+                    s(danceability) +
+                    s(loudness)")
+form.gam6 = formula("track_popularity ~
+                    s(loudness) +
+                    s(valence)")
+
+
+all.formulas = list(form.gam1,form.gam2,
+                    form.gam3,form.gam4,form.gam5,
+                    form.gam6)
+all.gams = lapply(all.formulas,gam,data = training)
+all.cv = sapply(all.gams,cv.gam)
+best.gam = all.gams[[which.min(all.cv)]]
+```
+
+Using LOO-CV, we found the best formula to use for our GAM was [`r Reduce(paste,deparse(best.gam$formula))`]. This formula includes every variable we thought to be of importance after our exploratory analysis.
+
+### Second Model: LM
+
+Next, we considered linear models (LM) because ordinary least squares regression makes a good baseline for modeling data, even when we know that the fit is likely not linear. 
+
+```{r lm-models}
+form.lm1 = formula("track_popularity ~
+                   energy + danceability +
+                   loudness + tempo *valenceCoded + 
+                   logLength") 
+form.lm2 = formula("track_popularity ~ 
+                   energy + valence + loudness +
+                   danceability + loudness +
+                   tempo * valenceCoded +
+                   logLength")
+form.lm3 = formula("track_popularity ~ 
+                   energy + valence + loudness + 
+                   danceability + loudness + tempo +
+                   logLength")
+form.lm4 = formula("track_popularity ~ 
+                   valence + danceability + 
+                   loudness + tempo + logLength")
+form.lm5 = formula("track_popularity ~
+                   valence + danceability + loudness")
+form.lm6 = formula("track_popularity ~ loudness + valence")
+lm.formulas = list(form.lm1,form.lm2,form.lm3,form.lm4,form.lm5,form.lm6)
+all.lm = lapply(lm.formulas,lm,data = training)
+all.cv.lm = sapply(all.lm,cv.glm)
+best.lm = all.lm[[which.min(all.cv.lm)]]
+best.lm.cv <- cv.glm(best.lm)
+```
+
+### Third Model: GLM
+
+Lastly, we considered the use of a Generalized Linear Model (GLM) using Poisson regression because of the slight right-skew in our data. 
+
+```{r GLM-models}
+all.glm = lapply(lm.formulas,glm,data = training, family = 'quasipoisson')
+all.cv.glm = sapply(all.glm,cv.glm)
+best.glm = all.glm[[which.min(all.cv.glm)]]
+poissonFormula = Reduce(paste,deparse(best.glm$formula))
+best.pois.cv <- cv.mdl(data = training,poissonFormula,fit.function = glm,family=quasipoisson,nfolds =5)
+```
+
+- Best GAM CV score: `r best.gam$gcv.ubre`
+- Best LM CV score: `r cv.glm(best.lm)`
+- Best GLM CV score`r cv.mdl(data = training,poissonFormula,fit.function = glm,family=quasipoisson,nfolds =5)`
+
+The GAM performed better than the Poisson regression and the ordinary least squares regression, so we will evaluate the usefulness of our best GAM on the testing data.
+
+## Final Model and Analysis
+
+```{r final-model}
+testing = na.omit(testing)
+final_model = best.gam
+preds = predict(final_model,newdata =testing)
+testing$y_hat = preds
+testing = testing %>%
+    mutate (
+        residuals = (track_popularity - y_hat)
+    )
+```
+
+```{r final-model diagnostics, fig.width = 9}
+
+resid.fittedPlot  = ggplot(testing,aes(y = residuals, x = y_hat)) + 
+    geom_point(alpha = .1) + geom_smooth(color="#1DB954") +
+    ggtitle("Residual Plot for GAM") +theme_classic()
+qqplot = ggplot(testing,aes(sample = residuals)) + 
+    stat_qq(aes(label = Song))
+#get the meta data
+qqdf = ggplot_build(qqplot)$data[[1]]
+qqdf$Song = arrange(testing,residuals)$Song
+realqqplot = ggplot(qqdf, aes(y = sample, x = theoretical)) + geom_point() +
+    geom_text(
+        vjust = .5,
+        angle = -30,
+        data = qqdf %>% filter(abs(sample - theoretical) > 60),
+        aes(label = Song) 
+    ) + ggtitle("QQNorm Plot of Residuals") +theme_classic()
+
+ggarrange(resid.fittedPlot,realqqplot)
+```
+
+Based on the residual plots, we can see that the residuals of our model are normally distributed which indicates that many of the trends in the data are explained by the model.
+
+In addition, the trend of our residuals vs. fitted plot looks well behaved. The residuals seem to be relatively randomly scattered around the 0 line. The variance of the residuals also seems to remain relatively constant. 
+
+```{r response_v_fit}
+ggplot(testing,(aes(x = y_hat, y = track_popularity))) + geom_point() + geom_smooth(color="#1DB954") + ggtitle("Response vs. Fitted") + ylab("Response") + xlab("Fitted")+theme_classic()
+```
+
+The trend of the response against the final model's fitted values seems to be approximately linear and positive. This means that our model does a sufficient job of explaining the deviance in the dataset. 
+
+## Results
+
+After our analysis, we hoped to explain how specific audio features are associated with a song's popularity on Spotify. Based on our best model, it seems that a track's energy, valence, loudness, danceability, tempo, and length all explain a portion of the variance found in popularity. Using these variables, it was possible to build a model that could effectively predict the popularity of a song with only this information. We know the relationship between these variables and a track's popularity are not perfectly linear, as a GAM provided the best fit as opposed to the linear models attempted. 
+
+Interestingly, the best model for this task considered tempo differently based on if the song qualified as happy, indifferent, or melancholy. This indicates that a track's tempo affects its popularity in different ways based on how happy it is. This makes sense, as you would expect sad songs and happy songs to have very different tempos. 
+In conclusion, it seems that the audio features available to us explain enough of the variance in a track's popularity to fit an effective model. In order for future work to improve upon this, we would recommend attempting the inclusion of more features, as there is still deviance in a track's popularity to be explained. It is possible that remaining variation is due to features that are not directly associated to a track's sound, such as the artist's presence on social media or the level of humor in a song. We believe that the inclusion of more variables such as this may have led to a model that explains a larger portion of the deviation in a song's popularity on Spotify. 
